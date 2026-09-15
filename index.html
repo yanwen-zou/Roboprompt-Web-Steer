@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#0b0d0c" />
+    <title>RoboPrompt · Visual Steering</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="noise" aria-hidden="true"></div>
+    <header class="topbar">
+      <a class="brand" href="./" aria-label="RoboPrompt home">
+        <span class="brand-mark">RP</span>
+        <span><strong>ROBOPROMPT</strong><small>VISUAL STEERING CONSOLE</small></span>
+      </a>
+      <div class="session">
+        <span id="connectionDot" class="status-dot"></span>
+        <span id="connectionText">WAITING FOR CLIENT</span>
+        <span class="divider"></span>
+        <span id="clock">--:--:--</span>
+      </div>
+    </header>
+
+    <main class="workspace">
+      <section class="viewer-panel">
+        <div class="section-head">
+          <div>
+            <span class="eyebrow">LIVE OBSERVATION</span>
+            <h1>引导机器人下一步动作</h1>
+          </div>
+          <div class="frame-meta">
+            <span>FRAME</span><strong id="frameId">—</strong>
+            <span>LATENCY</span><strong id="latency">—</strong>
+          </div>
+        </div>
+
+        <div id="stage" class="camera-stage" data-empty="true">
+          <img id="baseImage" crossorigin="anonymous" alt="Base camera observation" draggable="false" />
+          <canvas id="promptCanvas"></canvas>
+          <div id="emptyState" class="empty-state">
+            <div class="scan-icon"><span></span></div>
+            <strong>等待相机画面</strong>
+            <p>连接本地服务并启动机器人客户端后显示画面</p>
+          </div>
+          <div class="corner tl"></div><div class="corner tr"></div>
+          <div class="corner bl"></div><div class="corner br"></div>
+          <div class="camera-label"><span></span> BASE CAMERA / RGB</div>
+          <div id="drawHint" class="draw-hint">按住并拖动以绘制轨迹</div>
+        </div>
+
+        <div class="viewer-foot">
+          <div class="tool-switch" role="tablist" aria-label="Prompt tool">
+            <button class="tool active" data-tool="trajectory" role="tab" aria-selected="true">
+              <span class="tool-icon trajectory-icon"></span><span><b>轨迹</b><small>TRAJECTORY</small></span>
+            </button>
+            <button class="tool" data-tool="point" role="tab" aria-selected="false">
+              <span class="tool-icon point-icon"></span><span><b>目标点</b><small>POINT</small></span>
+            </button>
+            <button class="tool" data-tool="global" role="tab" aria-selected="false">
+              <span class="tool-icon axes-icon"></span><span><b>全局动作</b><small>GLOBAL</small></span>
+            </button>
+          </div>
+          <div class="history-actions">
+            <button id="undoButton" class="icon-button" title="撤销 (Ctrl+Z)" disabled>↶</button>
+            <button id="clearButton" class="text-button" disabled>清除画布</button>
+          </div>
+        </div>
+      </section>
+
+      <aside class="control-panel">
+        <form id="connectionForm" class="control-section connection-settings">
+          <label for="serverUrl">本地服务地址</label>
+          <input id="serverUrl" type="url" required placeholder="http://127.0.0.1:8765" />
+          <button type="submit" class="zero-button">连接 / 重试</button>
+          <p id="serverStatus" role="status">正在连接服务…</p>
+        </form>
+        <section class="wrist-card">
+          <div class="card-title"><span><i></i>WRIST CAMERA</span><span id="wristState">OFFLINE</span></div>
+          <div class="wrist-view"><img id="wristImage" crossorigin="anonymous" alt="Wrist camera observation" /><span>NO SIGNAL</span></div>
+        </section>
+
+        <section class="control-section global-section">
+          <div class="control-heading"><span>全局动作</span><small>NORMALIZED · BASE FRAME</small></div>
+          <div class="axis-control" data-axis="0">
+            <div class="axis-label"><b class="axis x">X</b><span>左右移动</span><output>+0.00</output></div>
+            <input type="range" min="-1" max="1" step="0.01" value="0" aria-label="Global X" />
+          </div>
+          <div class="axis-control" data-axis="1">
+            <div class="axis-label"><b class="axis y">Y</b><span>前后移动</span><output>+0.00</output></div>
+            <input type="range" min="-1" max="1" step="0.01" value="0" aria-label="Global Y" />
+          </div>
+          <div class="axis-control" data-axis="2">
+            <div class="axis-label"><b class="axis z">Z</b><span>上下移动</span><output>+0.00</output></div>
+            <input type="range" min="-1" max="1" step="0.01" value="0" aria-label="Global Z" />
+          </div>
+          <button id="zeroAxes" class="zero-button">归零全部轴 <kbd>0</kbd></button>
+        </section>
+
+        <section class="control-section compact">
+          <div class="seg-row"><span>作用时长</span><div class="segmented" data-setting="effect"><button data-value="short_term">短期</button><button class="selected" data-value="long_term">长期</button></div></div>
+          <div class="seg-row"><span>Phase 1</span><div class="segmented" data-setting="source"><button class="selected" data-value="evo">EVO</button><button data-value="hardcode">硬编码</button></div></div>
+          <label class="denoise-row"><span>Phase 2 steps <output id="stepsOutput">0.0</output></span><input id="stepsInput" type="range" min="0" max="10" step="0.2" value="0" /></label>
+        </section>
+
+        <section class="prompt-summary">
+          <span class="eyebrow">PROMPT PAYLOAD</span>
+          <div><span>视觉标注</span><strong id="visualSummary">未设置</strong></div>
+          <div><span>拖拽向量</span><strong id="dragSummary">[0.00, 0.00]</strong></div>
+          <div><span>全局向量</span><strong id="globalSummary">[0.00, 0.00, 0.00]</strong></div>
+          <div><span>推理状态</span><strong id="deliverySummary">等待 Prompt</strong></div>
+        </section>
+
+        <button id="sendButton" class="send-button" disabled><span>发送引导</span><small>COMMAND ↵</small></button>
+        <div id="toast" class="toast" role="status" aria-live="polite"></div>
+      </aside>
+    </main>
+    <script src="./app.js" defer></script>
+  </body>
+</html>
