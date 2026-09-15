@@ -12,7 +12,7 @@ let savedServerUrl;
 try { savedServerUrl = localStorage.getItem("webSteerServerUrl"); } catch (_) { /* storage may be disabled */ }
 const defaultServerUrl = location.hostname.endsWith(".github.io") ? "http://127.0.0.1:8765" : location.origin;
 let serverUrl;
-try { serverUrl = normalizeServerUrl(new URLSearchParams(location.search).get("server") || savedServerUrl || defaultServerUrl); }
+try { serverUrl = normalizeServerUrl(new URLSearchParams(location.search).get("server") || (location.hostname.endsWith(".github.io") ? savedServerUrl : null) || defaultServerUrl); }
 catch (_) { serverUrl = defaultServerUrl; }
 const apiUrl = (path) => serverUrl + path;
 const apiFetch = (path, options = {}) => fetch(apiUrl(path), { signal: AbortSignal.timeout(5000), ...options });
@@ -75,52 +75,55 @@ function pointerPoint(event) {
   return { x: (x - view.x) / view.width, y: (y - view.y) / view.height };
 }
 
-function screenPoint(point) {
-  const view = imageRect();
-  return { x: view.x + point.x * view.width, y: view.y + point.y * view.height };
-}
-
-function drawTrajectory(points) {
-  if (points.length < 2) return;
-  ctx.save();
-  ctx.lineCap = "round";
-  ctx.lineJoin = "round";
-  ctx.strokeStyle = "#76b900";
-  ctx.lineWidth = 3;
-  ctx.beginPath();
-  const start = screenPoint(points[0]);
-  ctx.moveTo(start.x, start.y);
-  points.slice(1).forEach((point) => { const p = screenPoint(point); ctx.lineTo(p.x, p.y); });
-  ctx.stroke();
-  const end = screenPoint(points.at(-1));
-  const previous = screenPoint(points.at(-2));
-  const angle = Math.atan2(end.y - previous.y, end.x - previous.x);
-  ctx.fillStyle = "#76b900";
-  ctx.beginPath();
-  ctx.moveTo(end.x, end.y);
-  ctx.lineTo(end.x - 13 * Math.cos(angle - .48), end.y - 13 * Math.sin(angle - .48));
-  ctx.lineTo(end.x - 13 * Math.cos(angle + .48), end.y - 13 * Math.sin(angle + .48));
-  ctx.closePath(); ctx.fill();
-  ctx.restore();
-}
-
-function drawPoint(point) {
-  const p = screenPoint(point);
-  ctx.save();
-  ctx.strokeStyle = "#76b900"; ctx.fillStyle = "rgba(118,185,0,.13)"; ctx.lineWidth = 2;
-  ctx.beginPath(); ctx.arc(p.x, p.y, 15, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(p.x - 22, p.y); ctx.lineTo(p.x + 22, p.y); ctx.moveTo(p.x, p.y - 22); ctx.lineTo(p.x, p.y + 22); ctx.stroke();
-  ctx.fillStyle = "#76b900"; ctx.beginPath(); ctx.arc(p.x, p.y, 3, 0, Math.PI * 2); ctx.fill();
-  ctx.restore();
+// Match eval_ui/render_utils.py and scripts/utils/draw_overlay.py:
+// white -> RGB(255, 80, 0) trajectory, radius-6 orange point with radius-8 white border.
+// Use the desktop UI's nominal 520px image height as a stable drawing coordinate
+// system, so phone/desktop previews and exported model prompts keep the same size.
+const PROMPT_REFERENCE_HEIGHT = 520;
+function drawPromptOps(target, ops, width, height) {
+  const scale = height / PROMPT_REFERENCE_HEIGHT;
+  const referenceWidth = width / scale;
+  const position = (point) => ({
+    x: Math.max(0, Math.min(referenceWidth - 1, point.x * referenceWidth)),
+    y: Math.max(0, Math.min(PROMPT_REFERENCE_HEIGHT - 1, point.y * PROMPT_REFERENCE_HEIGHT)),
+  });
+  const disk = (point, radius, color) => {
+    target.fillStyle = color;
+    target.beginPath(); target.arc(point.x, point.y, radius, 0, Math.PI * 2); target.fill();
+  };
+  target.save();
+  target.scale(scale, scale);
+  target.lineCap = "round"; target.lineJoin = "round";
+  // The Python renderer stamps radius-1 disks along the line.
+  target.lineWidth = 2;
+  for (const op of ops) {
+    if (op.type === "point" || op.points.length === 1) {
+      const point = position(op.type === "point" ? op.point : op.points[0]);
+      disk(point, 8, "#ffffff"); disk(point, 6, "#ff5000");
+    } else {
+      for (let i = 1; i < op.points.length; i++) {
+        // The local renderer colors each segment by its index, not arc length.
+        const t = (i - 1) / Math.max(op.points.length - 2, 1);
+        const color = `rgb(255, ${Math.floor(255 * (1 - t) + 80 * t)}, ${Math.floor(255 * (1 - t))})`;
+        const start = position(op.points[i - 1]), end = position(op.points[i]);
+        target.strokeStyle = color;
+        target.beginPath(); target.moveTo(start.x, start.y); target.lineTo(end.x, end.y); target.stroke();
+        disk(start, 1, color); disk(end, 1, color);
+      }
+    }
+  }
+  target.restore();
 }
 
 function render() {
   const box = stage.getBoundingClientRect();
   ctx.clearRect(0, 0, box.width, box.height);
-  [...state.ops, ...(state.drawing ? [state.drawing] : [])].forEach((op) => {
-    if (op.type === "trajectory") drawTrajectory(op.points);
-    if (op.type === "point") drawPoint(op.point);
-  });
+  const view = imageRect();
+  ctx.save();
+  ctx.beginPath(); ctx.rect(view.x, view.y, view.width, view.height); ctx.clip();
+  ctx.translate(view.x, view.y);
+  drawPromptOps(ctx, [...state.ops, ...(state.drawing ? [state.drawing] : [])], view.width, view.height);
+  ctx.restore();
   updateSummary();
 }
 
@@ -232,24 +235,7 @@ function exportPromptImage() {
   output.width = state.imageNatural.width; output.height = state.imageNatural.height;
   const out = output.getContext("2d");
   out.drawImage(image, 0, 0, output.width, output.height);
-  state.ops.forEach((op) => {
-    if (op.type === "point") {
-      const x = op.point.x * output.width, y = op.point.y * output.height;
-      const radius = Math.max(10, output.width * .018);
-      out.strokeStyle = "#76b900"; out.fillStyle = "rgba(118,185,0,.13)"; out.lineWidth = Math.max(2, output.width * .003);
-      out.beginPath(); out.arc(x, y, radius, 0, Math.PI * 2); out.fill(); out.stroke();
-      out.beginPath(); out.moveTo(x - radius * 1.45, y); out.lineTo(x + radius * 1.45, y); out.moveTo(x, y - radius * 1.45); out.lineTo(x, y + radius * 1.45); out.stroke();
-    } else if (op.points.length > 1) {
-      out.lineCap = "round"; out.lineJoin = "round"; out.strokeStyle = "#76b900"; out.fillStyle = "#76b900"; out.lineWidth = Math.max(3, output.width * .004);
-      out.beginPath(); out.moveTo(op.points[0].x * output.width, op.points[0].y * output.height);
-      op.points.slice(1).forEach((point) => out.lineTo(point.x * output.width, point.y * output.height)); out.stroke();
-      const end = op.points.at(-1), previous = op.points.at(-2);
-      const x = end.x * output.width, y = end.y * output.height;
-      const angle = Math.atan2((end.y - previous.y) * output.height, (end.x - previous.x) * output.width);
-      const size = Math.max(11, output.width * .02);
-      out.beginPath(); out.moveTo(x, y); out.lineTo(x - size * Math.cos(angle - .48), y - size * Math.sin(angle - .48)); out.lineTo(x - size * Math.cos(angle + .48), y - size * Math.sin(angle + .48)); out.closePath(); out.fill();
-    }
-  });
+  drawPromptOps(out, state.ops, output.width, output.height);
   return output.toDataURL("image/png");
 }
 
